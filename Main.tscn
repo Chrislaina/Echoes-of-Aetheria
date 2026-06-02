@@ -1,0 +1,53 @@
+[gd_scene load_steps=7 format=3 uid="M1a2i3n4"]
+[ext_resource path="res://Player.tscn" type="PackedScene" id=1]
+[ext_resource path="res://GameManager.cs" type="Script" id=2]
+[ext_resource path="res://Zombie.tscn" type="PackedScene" id=3]
+
+[node name="Main" type="Node2D"]
+
+[node name="Background" type="ColorRect" parent="."]
+color = Color(0.08, 0.08, 0.12, 1.0)
+rect_size = Vector2(1024, 768)
+
+[node name="Player" instance=ExtResource( 1 ) parent="."]
+position = Vector2(512, 384)
+
+[node name="GameManager" type="Node2D" parent="."]
+script = ExtResource( 2 )
+PlayerPath = NodePath("Player")
+WaveLabelPath = NodePath("CanvasLayer/WaveLabel")
+UpgradePanelPath = NodePath("CanvasLayer/UpgradePanel")
+Option1Path = NodePath("CanvasLayer/UpgradePanel/VBoxContainer/Option1")
+Option2Path = NodePath("CanvasLayer/UpgradePanel/VBoxContainer/Option2")
+Option3Path = NodePath("CanvasLayer/UpgradePanel/VBoxContainer/Option3")
+ZombieScene = ExtResource( 3 )
+
+[node name="CanvasLayer" type="CanvasLayer" parent="."]
+
+[node name="WaveLabel" type="Label" parent="CanvasLayer"]
+position = Vector2(16, 16)
+text = "Wave 1"
+custom_colors/font_color = Color(1, 1, 1, 1)
+
+[node name="UpgradePanel" type="Panel" parent="CanvasLayer"]
+visible = false
+rect_position = Vector2(262, 220)
+rect_size = Vector2(500, 260)
+
+[node name="VBoxContainer" type="VBoxContainer" parent="UpgradePanel"]
+custom_constants/separation = 14
+anchor_right = 1
+anchor_bottom = 1
+
+[node name="Title" type="Label" parent="UpgradePanel/VBoxContainer"]
+text = "Choose one upgrade"
+custom_colors/font_color = Color(1, 1, 1, 1)
+
+[node name="Option1" type="Button" parent="UpgradePanel/VBoxContainer"]
+text = "Option 1"
+
+[node name="Option2" type="Button" parent="UpgradePanel/VBoxContainer"]
+text = "Option 2"
+
+[node name="Option3" type="Button" parent="UpgradePanel/VBoxContainer"]
+text = "Option 3"

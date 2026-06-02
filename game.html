@@ -1,0 +1,1378 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Echoes of Aetheria - Open World Survival</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #10121a; color: #eef2ff; font-family: Arial, sans-serif; overflow: hidden; }
+    canvas { display: block; width: 100vw; height: 100vh; background: #0b101f; }
+    .stats { position: absolute; left: 16px; top: 16px; color: #eef2ff; font-size: 13px; line-height: 1.5; z-index: 10; }
+    .hotbar { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); display: flex; gap: 10px; background: rgba(12, 18, 32, 0.88); border: 1px solid #5365d8; border-radius: 14px; padding: 10px 14px; z-index: 10; }
+    .hotbar-slot { width: 120px; min-width: 120px; display: flex; flex-direction: column; align-items: center; gap: 6px; background: rgba(24, 36, 62, 0.95); border: 1px solid #4b6cff; border-radius: 10px; padding: 10px; }
+    .hotbar-slot.active { border-color: #9bb7ff; background: rgba(59, 90, 157, 0.95); }
+    .hotbar-slot .name { font-size: 12px; color: #eef2ff; text-align: center; }
+    .hotbar-slot .durability { font-size: 11px; color: #c2d5ff; }
+    .hotbar-slot .hotkey { font-size: 11px; color: #99b6ff; }
+    .resource-display { position: absolute; right: 16px; top: 16px; color: #eef2ff; font-size: 13px; text-align: right; z-index: 10; }
+    .overlay { position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; display: flex; align-items: center; justify-content: center; pointer-events: none; }
+    .panel { background: rgba(8, 12, 22, 0.96); border: 2px solid #5e8cff; border-radius: 16px; padding: 24px; text-align: center; width: 86vw; max-width: 520px; pointer-events: auto; }
+    .button { background: #18233d; color: #eef2ff; border: 1px solid #4b6cff; border-radius: 10px; padding: 12px 16px; cursor: pointer; transition: transform 0.15s ease, background 0.15s ease; font-size: 14px; }
+    .button:hover { background: #2a3d6b; transform: translateY(-1px); }
+    .button:active { transform: translateY(0); }
+  </style>
+</head>
+<body>
+  <canvas id="gameCanvas"></canvas>
+  <div class="stats" id="stats"></div>
+  <div class="resource-display" id="resources"></div>
+  <div class="hotbar" id="hotbar"></div>
+  <div class="overlay" id="overlay"></div>
+
+
+  <script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const stats = document.getElementById('stats');
+    const resourcesUI = document.getElementById('resources');
+    const hotbar = document.getElementById('hotbar');
+    const overlay = document.getElementById('overlay');
+
+
+    let width = window.innerWidth;
+    let height = window.innerHeight;
+    canvas.width = width;
+    canvas.height = height;
+
+
+    function resizeCanvas() {
+      width = window.innerWidth;
+      height = window.innerHeight;
+      canvas.width = width;
+      canvas.height = height;
+    }
+
+
+    window.addEventListener('resize', resizeCanvas);
+
+
+    const gameState = { playing: 'playing', gameover: 'gameover' };
+    let currentState = gameState.playing;
+
+
+    const player = {
+      x: 0,
+      y: 0,
+      radius: 20,
+      speed: 320,
+      health: 10,
+      maxHealth: 10,
+      fireRate: 3,
+      damage: 2,
+      cooldown: 0,
+      angle: 0,
+      inventory: [
+        { name: 'Basic Gun', type: 'gun', durability: 100, maxDurability: 100 },
+        { name: 'Basic Sword', type: 'sword', durability: 100, maxDurability: 100 },
+        { name: 'Basic Axe', type: 'axe', durability: 120, maxDurability: 120 },
+        { name: 'Basic Pickaxe', type: 'pickaxe', durability: 120, maxDurability: 120 }
+      ],
+      selectedIndex: 0,
+      resources: { wood: 0, ore: 0, coins: 20 }
+    };
+
+
+    const input = { up: false, down: false, left: false, right: false };
+    const mouse = { x: width / 2, y: height / 2, pressed: false };
+
+
+    const bullets = [];
+    const zombies = [];
+    const world = {
+      chunkSize: 1024,
+      chunks: new Map(),
+      visibleRadius: 2,
+      treeDensity: 0.0025, // Adjust tree density here: larger values spawn more trees per chunk
+      rockDensity: 0.0018, // Adjust rock density here: larger values spawn more rocks per chunk
+      bushDensity: 0.0016,
+      maxObjectsPerChunk: 30
+    };
+
+
+    const camera = {
+      x: player.x,
+      y: player.y,
+      lerp: 0.15,
+      update() {
+        this.x += (player.x - this.x) * this.lerp;
+        this.y += (player.y - this.y) * this.lerp;
+      },
+      worldToScreen(px, py) {
+        return { x: px - this.x + width / 2, y: py - this.y + height / 2 };
+      },
+      screenToWorld(sx, sy) {
+        return { x: sx + this.x - width / 2, y: sy + this.y - height / 2 };
+      }
+    };
+
+
+    function smoothStep(t) {
+      return t * t * (3 - 2 * t);
+    }
+
+
+    function hash(x) {
+      x = (x << 13) ^ x;
+      return (1.0 - ((x * (x * x * 15731 + 789221) + 1376312589) & 0x7fffffff) / 1073741824.0);
+    }
+
+
+    function seededNoise(x, y) {
+      const ix = Math.floor(x);
+      const iy = Math.floor(y);
+      const fx = x - ix;
+      const fy = y - iy;
+      const a = hash(ix + iy * 57);
+      const b = hash(ix + 1 + iy * 57);
+      const c = hash(ix + (iy + 1) * 57);
+      const d = hash(ix + 1 + (iy + 1) * 57);
+      const u = smoothStep(fx);
+      const v = smoothStep(fy);
+      return (a + (b - a) * u) * (1 - v) + (c + (d - c) * u) * v;
+    }
+
+
+    function chunkKey(cx, cy) {
+      return `${cx},${cy}`;
+    }
+
+
+    function createSeededRandom(cx, cy, salt = 0) {
+      let seed = (cx * 73428767) ^ (cy * 91267321) ^ salt;
+      return function() {
+        seed = (seed * 16807) % 2147483647;
+        return seed / 2147483647;
+      };
+    }
+
+
+    function generateChunk(cx, cy) {
+      const chunk = { resources: [] };
+      const rand = createSeededRandom(cx, cy, 42);
+      const objects = [];
+      const area = world.chunkSize * world.chunkSize;
+      const targetObjects = Math.min(world.maxObjectsPerChunk, Math.floor(area * (world.treeDensity + world.rockDensity + world.bushDensity) * 0.5));
+
+
+      for (let i = 0; i < targetObjects; i++) {
+        const localX = rand() * world.chunkSize;
+        const localY = rand() * world.chunkSize;
+        const globalX = cx * world.chunkSize + localX;
+        const globalY = cy * world.chunkSize + localY;
+        const noiseValue = seededNoise(globalX * 0.006, globalY * 0.006);
+        let type = null;
+
+
+        if (noiseValue > 0.25 && rand() < world.treeDensity * 10) {
+          type = 'tree';
+        } else if (noiseValue < -0.1 && rand() < world.rockDensity * 10) {
+          type = 'rock';
+        } else if (rand() < world.bushDensity * 4) {
+          type = 'bush';
+        }
+
+
+        if (!type) continue;
+
+
+        const radius = type === 'rock' ? 20 : type === 'tree' ? 24 : 14;
+        const hp = type === 'rock' ? 5 : type === 'tree' ? 4 : 2;
+
+
+        const overlaps = objects.some(obj => Math.hypot(obj.x - globalX, obj.y - globalY) < obj.radius + radius + 6);
+        if (overlaps) continue;
+
+
+        objects.push({ type, x: globalX, y: globalY, radius, hp, maxHp: hp });
+      }
+
+
+      chunk.resources = objects;
+      return chunk;
+    }
+
+
+    function getVisibleChunkRadius() {
+      return world.visibleRadius + 1;
+    }
+
+
+    function ensureWorldChunks() {
+      const centerCx = Math.floor(player.x / world.chunkSize);
+      const centerCy = Math.floor(player.y / world.chunkSize);
+      const radius = getVisibleChunkRadius();
+      for (let dx = -radius; dx <= radius; dx++) {
+        for (let dy = -radius; dy <= radius; dy++) {
+          const key = chunkKey(centerCx + dx, centerCy + dy);
+          if (!world.chunks.has(key)) {
+            world.chunks.set(key, generateChunk(centerCx + dx, centerCy + dy));
+          }
+        }
+      }
+    }
+
+
+    function getNearbyResources() {
+      const nearby = [];
+      const centerCx = Math.floor(player.x / world.chunkSize);
+      const centerCy = Math.floor(player.y / world.chunkSize);
+      const radius = getVisibleChunkRadius();
+      for (let dx = -radius; dx <= radius; dx++) {
+        for (let dy = -radius; dy <= radius; dy++) {
+          const key = chunkKey(centerCx + dx, centerCy + dy);
+          const chunk = world.chunks.get(key);
+          if (chunk) {
+            nearby.push(...chunk.resources);
+          }
+        }
+      }
+      return nearby;
+    }
+
+
+    function getNearbyZombies() {
+      const nearby = [];
+      const centerCx = Math.floor(player.x / world.chunkSize);
+      const centerCy = Math.floor(player.y / world.chunkSize);
+      const radius = getVisibleChunkRadius();
+      for (let dx = -radius; dx <= radius; dx++) {
+        for (let dy = -radius; dy <= radius; dy++) {
+          const key = chunkKey(centerCx + dx, centerCy + dy);
+          const chunk = world.chunks.get(key);
+          if (chunk) {
+            nearby.push(...chunk.zombies);
+          }
+        }
+      }
+      return nearby;
+    }
+
+
+    function clearFarChunks() {
+      const centerCx = Math.floor(player.x / world.chunkSize);
+      const centerCy = Math.floor(player.y / world.chunkSize);
+      const maxRadius = world.visibleRadius + 2;
+      for (const key of world.chunks.keys()) {
+        const [cx, cy] = key.split(',').map(Number);
+        if (Math.abs(cx - centerCx) > maxRadius || Math.abs(cy - centerCy) > maxRadius) {
+          world.chunks.delete(key);
+        }
+      }
+    }
+
+
+    function spawnPlayerBullet(targetX, targetY) {
+      const dx = targetX - player.x;
+      const dy = targetY - player.y;
+      const distance = Math.hypot(dx, dy);
+      if (distance < 1) return;
+      const nx = dx / distance;
+      const ny = dy / distance;
+      bullets.push({ x: player.x + nx * (player.radius + 10), y: player.y + ny * (player.radius + 10), dx: nx, dy: ny, speed: 920, radius: 6, damage: player.damage });
+    }
+
+
+    function useSword(targetX, targetY) {
+      const range = 60;
+      for (const zombie of zombies) {
+        const dist = Math.hypot(zombie.x - player.x, zombie.y - player.y);
+        if (dist <= range) {
+          zombie.health -= 4;
+          player.inventory[player.selectedIndex].durability -= 1;
+          break;
+        }
+      }
+    }
+
+
+    function harvestResource(targetX, targetY) {
+      const selected = player.inventory[player.selectedIndex];
+      for (const chunk of world.chunks.values()) {
+        for (let i = chunk.resources.length - 1; i >= 0; i--) {
+          const resource = chunk.resources[i];
+          const dist = Math.hypot(resource.x - targetX, resource.y - targetY);
+          if (dist <= resource.radius + 8) {
+            const validTool = (resource.type === 'tree' && selected.type === 'axe') || (resource.type === 'rock' && selected.type === 'pickaxe');
+            if (!validTool) return;
+            resource.hp -= 1;
+            selected.durability -= 1;
+            if (resource.hp <= 0) {
+              chunk.resources.splice(i, 1);
+              if (resource.type === 'tree') {
+                player.resources.wood += 1;
+                player.resources.coins += 3;
+              } else if (resource.type === 'rock') {
+                player.resources.ore += 1;
+                player.resources.coins += 5;
+              }
+            }
+            return;
+          }
+        }
+      }
+    }
+
+
+    function handleClick(event) {
+      if (currentState !== gameState.playing) return;
+      const rect = canvas.getBoundingClientRect();
+      const worldPoint = camera.screenToWorld(event.clientX - rect.left, event.clientY - rect.top);
+      const tool = player.inventory[player.selectedIndex];
+
+
+      if (tool.type === 'gun') {
+        spawnPlayerBullet(worldPoint.x, worldPoint.y);
+      } else if (tool.type === 'sword') {
+        useSword(worldPoint.x, worldPoint.y);
+      } else if (tool.type === 'axe' || tool.type === 'pickaxe') {
+        harvestResource(worldPoint.x, worldPoint.y);
+      }
+    }
+
+
+    canvas.addEventListener('mousedown', handleClick);
+
+
+    document.addEventListener('mousemove', event => {
+      mouse.x = event.clientX;
+      mouse.y = event.clientY;
+      const rect = canvas.getBoundingClientRect();
+      const worldPoint = camera.screenToWorld(event.clientX - rect.left, event.clientY - rect.top);
+      player.angle = Math.atan2(worldPoint.y - player.y, worldPoint.x - player.x);
+    });
+
+
+    document.addEventListener('keydown', event => {
+      if (event.code === 'KeyW') input.up = true;
+      if (event.code === 'KeyS') input.down = true;
+      if (event.code === 'KeyA') input.left = true;
+      if (event.code === 'KeyD') input.right = true;
+      if (event.code === 'Digit1') player.selectedIndex = 0;
+      if (event.code === 'Digit2') player.selectedIndex = 1;
+      if (event.code === 'Digit3') player.selectedIndex = 2;
+      if (event.code === 'Digit4') player.selectedIndex = 3;
+      if (event.code === 'Enter' && currentState === gameState.gameover) restartGame();
+    });
+
+
+    document.addEventListener('keyup', event => {
+      if (event.code === 'KeyW') input.up = false;
+      if (event.code === 'KeyS') input.down = false;
+      if (event.code === 'KeyA') input.left = false;
+      if (event.code === 'KeyD') input.right = false;
+    });
+
+
+    function restartGame() {
+      player.x = 0;
+      player.y = 0;
+      player.health = player.maxHealth;
+      player.inventory = [
+        { name: 'Basic Gun', type: 'gun', durability: 100, maxDurability: 100 },
+        { name: 'Basic Sword', type: 'sword', durability: 100, maxDurability: 100 },
+        { name: 'Basic Axe', type: 'axe', durability: 120, maxDurability: 120 },
+        { name: 'Basic Pickaxe', type: 'pickaxe', durability: 120, maxDurability: 120 }
+      ];
+      player.selectedIndex = 0;
+      player.resources = { wood: 0, ore: 0, coins: 20 };
+      bullets.length = 0;
+      zombies.length = 0;
+      world.chunks.clear();
+      currentState = gameState.playing;
+      overlay.innerHTML = '';
+    }
+
+
+    function findClosestZombie(turret) {
+      let nearest = null;
+      let bestDist = Infinity;
+      for (const zombie of zombies) {
+        const distance = Math.hypot(zombie.x - turret.x, zombie.y - turret.y);
+        if (distance < bestDist) {
+          bestDist = distance;
+          nearest = zombie;
+        }
+      }
+      return nearest;
+    }
+
+
+    function updateBullets(delta) {
+      for (let i = bullets.length - 1; i >= 0; i--) {
+        const bullet = bullets[i];
+        bullet.x += bullet.dx * bullet.speed * delta;
+        bullet.y += bullet.dy * bullet.speed * delta;
+        if (Math.abs(bullet.x - player.x) > width || Math.abs(bullet.y - player.y) > height) {
+          bullets.splice(i, 1);
+          continue;
+        }
+        for (let j = zombies.length - 1; j >= 0; j--) {
+          const zombie = zombies[j];
+          const dist = Math.hypot(bullet.x - zombie.x, bullet.y - zombie.y);
+          if (dist < bullet.radius + zombie.radius) {
+            zombie.health -= bullet.damage;
+            bullets.splice(i, 1);
+            if (zombie.health <= 0) {
+              zombies.splice(j, 1);
+              player.resources.coins += 5;
+            }
+            break;
+          }
+        }
+      }
+    }
+
+
+    function updateZombies(delta) {
+      for (let i = zombies.length - 1; i >= 0; i--) {
+        const zombie = zombies[i];
+        const vx = player.x - zombie.x;
+        const vy = player.y - zombie.y;
+        const distance = Math.hypot(vx, vy);
+        if (distance > 1) {
+          zombie.x += (vx / distance) * zombie.speed * delta;
+          zombie.y += (vy / distance) * zombie.speed * delta;
+        }
+        if (distance < zombie.radius + player.radius) {
+          zombies.splice(i, 1);
+          player.health = Math.max(0, player.health - 1);
+          if (player.health <= 0) {
+            currentState = gameState.gameover;
+            showGameOver();
+          }
+        }
+      }
+    }
+
+
+    function updatePlayer(delta) {
+      const dirX = (input.right ? 1 : 0) - (input.left ? 1 : 0);
+      const dirY = (input.down ? 1 : 0) - (input.up ? 1 : 0);
+      const move = Math.hypot(dirX, dirY);
+      if (move > 0) {
+        player.x += (dirX / move) * player.speed * delta;
+        player.y += (dirY / move) * player.speed * delta;
+      }
+      player.cooldown = Math.max(0, player.cooldown - delta);
+    }
+
+
+    function updateWorld(delta) {
+      ensureWorldChunks();
+      clearFarChunks();
+      const centerCx = Math.floor(player.x / world.chunkSize);
+      const centerCy = Math.floor(player.y / world.chunkSize);
+      for (let dx = -world.visibleRadius; dx <= world.visibleRadius; dx++) {
+        for (let dy = -world.visibleRadius; dy <= world.visibleRadius; dy++) {
+          const chunk = world.chunks.get(chunkKey(centerCx + dx, centerCy + dy));
+          if (!chunk) continue;
+          for (const resource of chunk.resources) {
+            if (resource.type === 'bush') continue;
+          }
+        }
+      }
+      updateZombies(delta);
+      updateBullets(delta);
+    }
+
+
+    function showGameOver() {
+      overlay.innerHTML = '';
+      const panel = document.createElement('div');
+      panel.className = 'panel';
+      panel.innerHTML = `<h2>Game Over</h2><p>You survived until your resources ran out.</p>`;
+      const button = document.createElement('button');
+      button.className = 'button';
+      button.textContent = 'Restart';
+      button.onclick = restartGame;
+      panel.appendChild(button);
+      overlay.appendChild(panel);
+    }
+
+
+    function drawGrid() {
+      const gridSize = 128;
+      ctx.strokeStyle = 'rgba(120, 140, 190, 0.12)';
+      ctx.lineWidth = 1;
+      const offsetX = camera.x % gridSize;
+      const offsetY = camera.y % gridSize;
+      for (let x = -offsetX; x <= width; x += gridSize) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, height);
+        ctx.stroke();
+      }
+      for (let y = -offsetY; y <= height; y += gridSize) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(width, y);
+        ctx.stroke();
+      }
+    }
+
+
+    function drawResource(resource) {
+      const screen = camera.worldToScreen(resource.x, resource.y);
+      if (screen.x < -100 || screen.x > width + 100 || screen.y < -100 || screen.y > height + 100) return;
+      if (resource.type === 'tree') {
+        ctx.fillStyle = '#2e7f2d';
+        ctx.beginPath();
+        ctx.arc(screen.x, screen.y - 8, resource.radius * 0.9, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#6c4a1a';
+        ctx.fillRect(screen.x - 8, screen.y - 6, 16, resource.radius * 0.8);
+      } else if (resource.type === 'rock') {
+        ctx.fillStyle = '#7c7c86';
+        ctx.beginPath();
+        ctx.moveTo(screen.x - 16, screen.y + 8);
+        ctx.lineTo(screen.x + 12, screen.y + 8);
+        ctx.lineTo(screen.x + 18, screen.y - 10);
+        ctx.lineTo(screen.x - 10, screen.y - 18);
+        ctx.closePath();
+        ctx.fill();
+      } else if (resource.type === 'bush') {
+        ctx.fillStyle = '#3f8b2d';
+        ctx.beginPath();
+        ctx.arc(screen.x - 10, screen.y, resource.radius * 0.7, 0, Math.PI * 2);
+        ctx.arc(screen.x + 8, screen.y - 4, resource.radius * 0.7, 0, Math.PI * 2);
+        ctx.arc(screen.x, screen.y + 10, resource.radius * 0.7, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      if (resource.hp < resource.maxHp) {
+        const ratio = resource.hp / resource.maxHp;
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(screen.x, screen.y - resource.radius - 10, resource.radius * 0.6, 0, Math.PI * 2 * ratio);
+        ctx.stroke();
+      }
+    }
+
+
+    function drawZombie(zombie) {
+      const screen = camera.worldToScreen(zombie.x, zombie.y);
+      if (screen.x < -100 || screen.x > width + 100 || screen.y < -100 || screen.y > height + 100) return;
+      ctx.fillStyle = '#9bbf44';
+      ctx.beginPath();
+      ctx.arc(screen.x, screen.y, zombie.radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#2c3c16';
+      ctx.beginPath();
+      ctx.arc(screen.x - 8, screen.y - 6, 5, 0, Math.PI * 2);
+      ctx.arc(screen.x + 8, screen.y - 6, 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#2c3c16';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(screen.x, screen.y + 8, 10, 0.2 * Math.PI, 0.8 * Math.PI);
+      ctx.stroke();
+    }
+
+
+    function drawBullet(bullet) {
+      const screen = camera.worldToScreen(bullet.x, bullet.y);
+      ctx.fillStyle = '#fff3a5';
+      ctx.beginPath();
+      ctx.arc(screen.x, screen.y, bullet.radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+
+
+    function drawPlayer() {
+      const centerX = width / 2;
+      const centerY = height / 2;
+      ctx.save();
+      ctx.translate(centerX, centerY);
+      ctx.rotate(player.angle);
+      const bodyGradient = ctx.createRadialGradient(-5, -5, 2, 0, 0, player.radius);
+      bodyGradient.addColorStop(0, '#eaf4ff');
+      bodyGradient.addColorStop(0.4, '#4c8df2');
+      bodyGradient.addColorStop(1, '#1f4fa3');
+      ctx.fillStyle = bodyGradient;
+      ctx.beginPath();
+      ctx.arc(0, 0, player.radius, 0, Math.PI * 2);
+      ctx.fill();
+
+
+      ctx.fillStyle = '#b2d7ff';
+      ctx.beginPath();
+      ctx.arc(0, 0, player.radius * 0.55, 0, Math.PI * 2);
+      ctx.fill();
+
+
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, -5, player.radius + 14, 10);
+      ctx.fillStyle = '#3d6cff';
+      ctx.fillRect(0, -3, player.radius * 0.6, 6);
+      ctx.beginPath();
+      ctx.arc(player.radius * 0.5, 0, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+
+    function drawUI() {
+      const selected = player.inventory[player.selectedIndex];
+      stats.innerHTML = `Health: ${player.health}/${player.maxHealth} � Tool: ${selected.name} � Durability: ${selected.durability}/${selected.maxDurability}`;
+      resourcesUI.innerHTML = `Wood: ${player.resources.wood} � Ore: ${player.resources.ore} � Coins: ${player.resources.coins}`;
+      hotbar.innerHTML = '';
+      player.inventory.forEach((item, index) => {
+        const slot = document.createElement('div');
+        slot.className = 'hotbar-slot' + (index === player.selectedIndex ? ' active' : '');
+        slot.innerHTML = `<div class='name'>${item.name}</div><div class='durability'>Durability: ${item.durability}/${item.maxDurability}</div><div class='hotkey'>${index + 1}</div>`;
+        hotbar.appendChild(slot);
+      });
+    }
+
+
+    function draw() {
+      ctx.clearRect(0, 0, width, height);
+      ctx.fillStyle = '#0f1624';
+      ctx.fillRect(0, 0, width, height);
+      drawGrid();
+
+
+      ensureWorldChunks();
+      const centerCx = Math.floor(player.x / world.chunkSize);
+      const centerCy = Math.floor(player.y / world.chunkSize);
+      const radius = world.visibleRadius;
+      for (let dx = -radius; dx <= radius; dx++) {
+        for (let dy = -radius; dy <= radius; dy++) {
+          const chunk = world.chunks.get(chunkKey(centerCx + dx, centerCy + dy));
+          if (!chunk) continue;
+          for (const resource of chunk.resources) {
+            drawResource(resource);
+          }
+        }
+      }
+
+
+      zombies.forEach(drawZombie);
+      bullets.forEach(drawBullet);
+      drawPlayer();
+      drawUI();
+    }
+
+
+    function spawnZombieWave() {
+      const angle = Math.random() * Math.PI * 2;
+      const distance = 600 + Math.random() * 240;
+      zombies.push({ x: player.x + Math.cos(angle) * distance, y: player.y + Math.sin(angle) * distance, radius: 18, speed: 90 + Math.random() * 40, health: 4 + Math.floor(Math.random() * 3) });
+    }
+
+
+    let spawnTimer = 0;
+    function updateGame(delta) {
+      if (currentState !== gameState.playing) return;
+      updatePlayer(delta);
+      camera.update();
+      updateWorld(delta);
+      spawnTimer -= delta;
+      if (spawnTimer <= 0) {
+        spawnZombieWave();
+        spawnTimer = 3 + Math.random() * 2;
+      }
+    }
+
+
+    let lastTime = 0;
+    function gameLoop(timestamp) {
+      const delta = Math.min((timestamp - lastTime) / 1000, 0.033);
+      lastTime = timestamp;
+      if (currentState === gameState.playing) {
+        updateGame(delta);
+      }
+      draw();
+      requestAnimationFrame(gameLoop);
+    }
+
+
+    restartGame();
+    requestAnimationFrame(gameLoop);
+  </script>
+</body>
+</html>
+
+
+    function resizeCanvas() {
+      width = window.innerWidth;
+      height = window.innerHeight;
+      canvas.width = width;
+      canvas.height = height;
+    }
+
+
+    window.addEventListener('resize', resizeCanvas);
+
+
+    const gameState = { playing: 'playing', gameover: 'gameover' };
+    let currentState = gameState.playing;
+
+
+    const player = {
+      x: 0,
+      y: 0,
+      radius: 20,
+      speed: 320,
+      health: 10,
+      maxHealth: 10,
+      fireRate: 3,
+      damage: 2,
+      cooldown: 0,
+      angle: 0,
+      inventory: [
+        { name: 'Basic Gun', type: 'gun', durability: 100, maxDurability: 100 },
+        { name: 'Basic Sword', type: 'sword', durability: 100, maxDurability: 100 },
+        { name: 'Basic Axe', type: 'axe', durability: 120, maxDurability: 120 },
+        { name: 'Basic Pickaxe', type: 'pickaxe', durability: 120, maxDurability: 120 }
+      ],
+      selectedIndex: 0,
+      resources: { wood: 0, ore: 0, coins: 20 }
+    };
+
+
+    const input = { up: false, down: false, left: false, right: false };
+    const mouse = { x: width / 2, y: height / 2, pressed: false };
+
+
+    const bullets = [];
+    const zombies = [];
+    const world = {
+      chunkSize: 1024,
+      chunks: new Map(),
+      visibleRadius: 2,
+      treeDensity: 0.0025, // Adjust tree density here: larger values spawn more trees per chunk
+      rockDensity: 0.0018, // Adjust rock density here: larger values spawn more rocks per chunk
+      bushDensity: 0.0016,
+      maxObjectsPerChunk: 30
+    };
+
+
+    const camera = {
+      x: player.x,
+      y: player.y,
+      lerp: 0.15,
+      update() {
+        this.x += (player.x - this.x) * this.lerp;
+        this.y += (player.y - this.y) * this.lerp;
+      },
+      worldToScreen(px, py) {
+        return { x: px - this.x + width / 2, y: py - this.y + height / 2 };
+      },
+      screenToWorld(sx, sy) {
+        return { x: sx + this.x - width / 2, y: sy + this.y - height / 2 };
+      }
+    };
+
+
+    function smoothStep(t) {
+      return t * t * (3 - 2 * t);
+    }
+
+
+    function hash(x) {
+      x = (x << 13) ^ x;
+      return (1.0 - ((x * (x * x * 15731 + 789221) + 1376312589) & 0x7fffffff) / 1073741824.0);
+    }
+
+
+    function seededNoise(x, y) {
+      const ix = Math.floor(x);
+      const iy = Math.floor(y);
+      const fx = x - ix;
+      const fy = y - iy;
+      const a = hash(ix + iy * 57);
+      const b = hash(ix + 1 + iy * 57);
+      const c = hash(ix + (iy + 1) * 57);
+      const d = hash(ix + 1 + (iy + 1) * 57);
+      const u = smoothStep(fx);
+      const v = smoothStep(fy);
+      return (a + (b - a) * u) * (1 - v) + (c + (d - c) * u) * v;
+    }
+
+
+    function chunkKey(cx, cy) {
+      return `${cx},${cy}`;
+    }
+
+
+    function createSeededRandom(cx, cy, salt = 0) {
+      let seed = (cx * 73428767) ^ (cy * 91267321) ^ salt;
+      return function() {
+        seed = (seed * 16807) % 2147483647;
+        return seed / 2147483647;
+      };
+    }
+
+
+    function generateChunk(cx, cy) {
+      const chunk = { resources: [] };
+      const rand = createSeededRandom(cx, cy, 42);
+      const objects = [];
+      const area = world.chunkSize * world.chunkSize;
+      const targetObjects = Math.min(world.maxObjectsPerChunk, Math.floor(area * (world.treeDensity + world.rockDensity + world.bushDensity) * 0.5));
+
+
+      for (let i = 0; i < targetObjects; i++) {
+        const localX = rand() * world.chunkSize;
+        const localY = rand() * world.chunkSize;
+        const globalX = cx * world.chunkSize + localX;
+        const globalY = cy * world.chunkSize + localY;
+        const noiseValue = seededNoise(globalX * 0.006, globalY * 0.006);
+        let type = null;
+
+
+        if (noiseValue > 0.25 && rand() < world.treeDensity * 10) {
+          type = 'tree';
+        } else if (noiseValue < -0.1 && rand() < world.rockDensity * 10) {
+          type = 'rock';
+        } else if (rand() < world.bushDensity * 4) {
+          type = 'bush';
+        }
+
+
+        if (!type) continue;
+
+
+        const radius = type === 'rock' ? 20 : type === 'tree' ? 24 : 14;
+        const hp = type === 'rock' ? 5 : type === 'tree' ? 4 : 2;
+
+
+        const overlaps = objects.some(obj => Math.hypot(obj.x - globalX, obj.y - globalY) < obj.radius + radius + 6);
+        if (overlaps) continue;
+
+
+        objects.push({ type, x: globalX, y: globalY, radius, hp, maxHp: hp });
+      }
+
+
+      chunk.resources = objects;
+      return chunk;
+    }
+
+
+    function getVisibleChunkRadius() {
+      return world.visibleRadius + 1;
+    }
+
+
+    function ensureWorldChunks() {
+      const centerCx = Math.floor(player.x / world.chunkSize);
+      const centerCy = Math.floor(player.y / world.chunkSize);
+      const radius = getVisibleChunkRadius();
+      for (let dx = -radius; dx <= radius; dx++) {
+        for (let dy = -radius; dy <= radius; dy++) {
+          const key = chunkKey(centerCx + dx, centerCy + dy);
+          if (!world.chunks.has(key)) {
+            world.chunks.set(key, generateChunk(centerCx + dx, centerCy + dy));
+          }
+        }
+      }
+    }
+
+
+    function getNearbyResources() {
+      const nearby = [];
+      const centerCx = Math.floor(player.x / world.chunkSize);
+      const centerCy = Math.floor(player.y / world.chunkSize);
+      const radius = getVisibleChunkRadius();
+      for (let dx = -radius; dx <= radius; dx++) {
+        for (let dy = -radius; dy <= radius; dy++) {
+          const key = chunkKey(centerCx + dx, centerCy + dy);
+          const chunk = world.chunks.get(key);
+          if (chunk) {
+            nearby.push(...chunk.resources);
+          }
+        }
+      }
+      return nearby;
+    }
+
+
+    function getNearbyZombies() {
+      const nearby = [];
+      const centerCx = Math.floor(player.x / world.chunkSize);
+      const centerCy = Math.floor(player.y / world.chunkSize);
+      const radius = getVisibleChunkRadius();
+      for (let dx = -radius; dx <= radius; dx++) {
+        for (let dy = -radius; dy <= radius; dy++) {
+          const key = chunkKey(centerCx + dx, centerCy + dy);
+          const chunk = world.chunks.get(key);
+          if (chunk) {
+            nearby.push(...chunk.zombies);
+          }
+        }
+      }
+      return nearby;
+    }
+
+
+    function clearFarChunks() {
+      const centerCx = Math.floor(player.x / world.chunkSize);
+      const centerCy = Math.floor(player.y / world.chunkSize);
+      const maxRadius = world.visibleRadius + 2;
+      for (const key of world.chunks.keys()) {
+        const [cx, cy] = key.split(',').map(Number);
+        if (Math.abs(cx - centerCx) > maxRadius || Math.abs(cy - centerCy) > maxRadius) {
+          world.chunks.delete(key);
+        }
+      }
+    }
+
+
+    function spawnPlayerBullet(targetX, targetY) {
+      const dx = targetX - player.x;
+      const dy = targetY - player.y;
+      const distance = Math.hypot(dx, dy);
+      if (distance < 1) return;
+      const nx = dx / distance;
+      const ny = dy / distance;
+      bullets.push({ x: player.x + nx * (player.radius + 10), y: player.y + ny * (player.radius + 10), dx: nx, dy: ny, speed: 920, radius: 6, damage: player.damage });
+    }
+
+
+    function useSword(targetX, targetY) {
+      const range = 60;
+      for (const zombie of zombies) {
+        const dist = Math.hypot(zombie.x - player.x, zombie.y - player.y);
+        if (dist <= range) {
+          zombie.health -= 4;
+          player.inventory[player.selectedIndex].durability -= 1;
+          break;
+        }
+      }
+    }
+
+
+    function harvestResource(targetX, targetY) {
+      const selected = player.inventory[player.selectedIndex];
+      for (const chunk of world.chunks.values()) {
+        for (let i = chunk.resources.length - 1; i >= 0; i--) {
+          const resource = chunk.resources[i];
+          const dist = Math.hypot(resource.x - targetX, resource.y - targetY);
+          if (dist <= resource.radius + 8) {
+            const validTool = (resource.type === 'tree' && selected.type === 'axe') || (resource.type === 'rock' && selected.type === 'pickaxe');
+            if (!validTool) return;
+            resource.hp -= 1;
+            selected.durability -= 1;
+            if (resource.hp <= 0) {
+              chunk.resources.splice(i, 1);
+              if (resource.type === 'tree') {
+                player.resources.wood += 1;
+                player.resources.coins += 3;
+              } else if (resource.type === 'rock') {
+                player.resources.ore += 1;
+                player.resources.coins += 5;
+              }
+            }
+            return;
+          }
+        }
+      }
+    }
+
+
+    function handleClick(event) {
+      if (currentState !== gameState.playing) return;
+      const rect = canvas.getBoundingClientRect();
+      const worldPoint = camera.screenToWorld(event.clientX - rect.left, event.clientY - rect.top);
+      const tool = player.inventory[player.selectedIndex];
+
+
+      if (tool.type === 'gun') {
+        spawnPlayerBullet(worldPoint.x, worldPoint.y);
+      } else if (tool.type === 'sword') {
+        useSword(worldPoint.x, worldPoint.y);
+      } else if (tool.type === 'axe' || tool.type === 'pickaxe') {
+        harvestResource(worldPoint.x, worldPoint.y);
+      }
+    }
+
+
+    canvas.addEventListener('mousedown', handleClick);
+
+
+    document.addEventListener('mousemove', event => {
+      mouse.x = event.clientX;
+      mouse.y = event.clientY;
+      const rect = canvas.getBoundingClientRect();
+      const worldPoint = camera.screenToWorld(event.clientX - rect.left, event.clientY - rect.top);
+      player.angle = Math.atan2(worldPoint.y - player.y, worldPoint.x - player.x);
+    });
+
+
+    document.addEventListener('keydown', event => {
+      if (event.code === 'KeyW') input.up = true;
+      if (event.code === 'KeyS') input.down = true;
+      if (event.code === 'KeyA') input.left = true;
+      if (event.code === 'KeyD') input.right = true;
+      if (event.code === 'Digit1') player.selectedIndex = 0;
+      if (event.code === 'Digit2') player.selectedIndex = 1;
+      if (event.code === 'Digit3') player.selectedIndex = 2;
+      if (event.code === 'Digit4') player.selectedIndex = 3;
+      if (event.code === 'Enter' && currentState === gameState.gameover) restartGame();
+    });
+
+
+    document.addEventListener('keyup', event => {
+      if (event.code === 'KeyW') input.up = false;
+      if (event.code === 'KeyS') input.down = false;
+      if (event.code === 'KeyA') input.left = false;
+      if (event.code === 'KeyD') input.right = false;
+    });
+
+
+    function restartGame() {
+      player.x = 0;
+      player.y = 0;
+      player.health = player.maxHealth;
+      player.inventory = [
+        { name: 'Basic Gun', type: 'gun', durability: 100, maxDurability: 100 },
+        { name: 'Basic Sword', type: 'sword', durability: 100, maxDurability: 100 },
+        { name: 'Basic Axe', type: 'axe', durability: 120, maxDurability: 120 },
+        { name: 'Basic Pickaxe', type: 'pickaxe', durability: 120, maxDurability: 120 }
+      ];
+      player.selectedIndex = 0;
+      player.resources = { wood: 0, ore: 0, coins: 20 };
+      bullets.length = 0;
+      zombies.length = 0;
+      world.chunks.clear();
+      currentState = gameState.playing;
+      overlay.innerHTML = '';
+    }
+
+
+    function findClosestZombie(turret) {
+      let nearest = null;
+      let bestDist = Infinity;
+      for (const zombie of zombies) {
+        const distance = Math.hypot(zombie.x - turret.x, zombie.y - turret.y);
+        if (distance < bestDist) {
+          bestDist = distance;
+          nearest = zombie;
+        }
+      }
+      return nearest;
+    }
+
+
+    function updateBullets(delta) {
+      for (let i = bullets.length - 1; i >= 0; i--) {
+        const bullet = bullets[i];
+        bullet.x += bullet.dx * bullet.speed * delta;
+        bullet.y += bullet.dy * bullet.speed * delta;
+        if (Math.abs(bullet.x - player.x) > width || Math.abs(bullet.y - player.y) > height) {
+          bullets.splice(i, 1);
+          continue;
+        }
+        for (let j = zombies.length - 1; j >= 0; j--) {
+          const zombie = zombies[j];
+          const dist = Math.hypot(bullet.x - zombie.x, bullet.y - zombie.y);
+          if (dist < bullet.radius + zombie.radius) {
+            zombie.health -= bullet.damage;
+            bullets.splice(i, 1);
+            if (zombie.health <= 0) {
+              zombies.splice(j, 1);
+              player.resources.coins += 5;
+            }
+            break;
+          }
+        }
+      }
+    }
+
+
+    function updateZombies(delta) {
+      for (let i = zombies.length - 1; i >= 0; i--) {
+        const zombie = zombies[i];
+        const vx = player.x - zombie.x;
+        const vy = player.y - zombie.y;
+        const distance = Math.hypot(vx, vy);
+        if (distance > 1) {
+          zombie.x += (vx / distance) * zombie.speed * delta;
+          zombie.y += (vy / distance) * zombie.speed * delta;
+        }
+        if (distance < zombie.radius + player.radius) {
+          zombies.splice(i, 1);
+          player.health = Math.max(0, player.health - 1);
+          if (player.health <= 0) {
+            currentState = gameState.gameover;
+            showGameOver();
+          }
+        }
+      }
+    }
+
+
+    function updatePlayer(delta) {
+      const dirX = (input.right ? 1 : 0) - (input.left ? 1 : 0);
+      const dirY = (input.down ? 1 : 0) - (input.up ? 1 : 0);
+      const move = Math.hypot(dirX, dirY);
+      if (move > 0) {
+        player.x += (dirX / move) * player.speed * delta;
+        player.y += (dirY / move) * player.speed * delta;
+      }
+      player.cooldown = Math.max(0, player.cooldown - delta);
+    }
+
+
+    function updateWorld(delta) {
+      ensureWorldChunks();
+      clearFarChunks();
+      const centerCx = Math.floor(player.x / world.chunkSize);
+      const centerCy = Math.floor(player.y / world.chunkSize);
+      for (let dx = -world.visibleRadius; dx <= world.visibleRadius; dx++) {
+        for (let dy = -world.visibleRadius; dy <= world.visibleRadius; dy++) {
+          const chunk = world.chunks.get(chunkKey(centerCx + dx, centerCy + dy));
+          if (!chunk) continue;
+          for (const resource of chunk.resources) {
+            if (resource.type === 'bush') continue;
+          }
+        }
+      }
+      updateZombies(delta);
+      updateBullets(delta);
+    }
+
+
+    function showGameOver() {
+      overlay.innerHTML = '';
+      const panel = document.createElement('div');
+      panel.className = 'panel';
+      panel.innerHTML = `<h2>Game Over</h2><p>You survived until your resources ran out.</p>`;
+      const button = document.createElement('button');
+      button.className = 'button';
+      button.textContent = 'Restart';
+      button.onclick = restartGame;
+      panel.appendChild(button);
+      overlay.appendChild(panel);
+    }
+
+
+    function drawGrid() {
+      const gridSize = 128;
+      ctx.strokeStyle = 'rgba(120, 140, 190, 0.12)';
+      ctx.lineWidth = 1;
+      const offsetX = camera.x % gridSize;
+      const offsetY = camera.y % gridSize;
+      for (let x = -offsetX; x <= width; x += gridSize) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, height);
+        ctx.stroke();
+      }
+      for (let y = -offsetY; y <= height; y += gridSize) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(width, y);
+        ctx.stroke();
+      }
+    }
+
+
+    function drawResource(resource) {
+      const screen = camera.worldToScreen(resource.x, resource.y);
+      if (screen.x < -100 || screen.x > width + 100 || screen.y < -100 || screen.y > height + 100) return;
+      if (resource.type === 'tree') {
+        ctx.fillStyle = '#2e7f2d';
+        ctx.beginPath();
+        ctx.arc(screen.x, screen.y - 8, resource.radius * 0.9, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#6c4a1a';
+        ctx.fillRect(screen.x - 8, screen.y - 6, 16, resource.radius * 0.8);
+      } else if (resource.type === 'rock') {
+        ctx.fillStyle = '#7c7c86';
+        ctx.beginPath();
+        ctx.moveTo(screen.x - 16, screen.y + 8);
+        ctx.lineTo(screen.x + 12, screen.y + 8);
+        ctx.lineTo(screen.x + 18, screen.y - 10);
+        ctx.lineTo(screen.x - 10, screen.y - 18);
+        ctx.closePath();
+        ctx.fill();
+      } else if (resource.type === 'bush') {
+        ctx.fillStyle = '#3f8b2d';
+        ctx.beginPath();
+        ctx.arc(screen.x - 10, screen.y, resource.radius * 0.7, 0, Math.PI * 2);
+        ctx.arc(screen.x + 8, screen.y - 4, resource.radius * 0.7, 0, Math.PI * 2);
+        ctx.arc(screen.x, screen.y + 10, resource.radius * 0.7, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      if (resource.hp < resource.maxHp) {
+        const ratio = resource.hp / resource.maxHp;
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(screen.x, screen.y - resource.radius - 10, resource.radius * 0.6, 0, Math.PI * 2 * ratio);
+        ctx.stroke();
+      }
+    }
+
+
+    function drawZombie(zombie) {
+      const screen = camera.worldToScreen(zombie.x, zombie.y);
+      if (screen.x < -100 || screen.x > width + 100 || screen.y < -100 || screen.y > height + 100) return;
+      ctx.fillStyle = '#9bbf44';
+      ctx.beginPath();
+      ctx.arc(screen.x, screen.y, zombie.radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#2c3c16';
+      ctx.beginPath();
+      ctx.arc(screen.x - 8, screen.y - 6, 5, 0, Math.PI * 2);
+      ctx.arc(screen.x + 8, screen.y - 6, 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#2c3c16';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(screen.x, screen.y + 8, 10, 0.2 * Math.PI, 0.8 * Math.PI);
+      ctx.stroke();
+    }
+
+
+    function drawBullet(bullet) {
+      const screen = camera.worldToScreen(bullet.x, bullet.y);
+      ctx.fillStyle = '#fff3a5';
+      ctx.beginPath();
+      ctx.arc(screen.x, screen.y, bullet.radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+
+
+    function drawPlayer() {
+      const centerX = width / 2;
+      const centerY = height / 2;
+      ctx.save();
+      ctx.translate(centerX, centerY);
+      ctx.rotate(player.angle);
+      const bodyGradient = ctx.createRadialGradient(-5, -5, 2, 0, 0, player.radius);
+      bodyGradient.addColorStop(0, '#eaf4ff');
+      bodyGradient.addColorStop(0.4, '#4c8df2');
+      bodyGradient.addColorStop(1, '#1f4fa3');
+      ctx.fillStyle = bodyGradient;
+      ctx.beginPath();
+      ctx.arc(0, 0, player.radius, 0, Math.PI * 2);
+      ctx.fill();
+
+
+      ctx.fillStyle = '#b2d7ff';
+      ctx.beginPath();
+      ctx.arc(0, 0, player.radius * 0.55, 0, Math.PI * 2);
+      ctx.fill();
+
+
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, -5, player.radius + 14, 10);
+      ctx.fillStyle = '#3d6cff';
+      ctx.fillRect(0, -3, player.radius * 0.6, 6);
+      ctx.beginPath();
+      ctx.arc(player.radius * 0.5, 0, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+
+    function drawUI() {
+      const selected = player.inventory[player.selectedIndex];
+      stats.innerHTML = `Health: ${player.health}/${player.maxHealth} � Tool: ${selected.name} � Durability: ${selected.durability}/${selected.maxDurability}`;
+      resourcesUI.innerHTML = `Wood: ${player.resources.wood} � Ore: ${player.resources.ore} � Coins: ${player.resources.coins}`;
+      hotbar.innerHTML = '';
+      player.inventory.forEach((item, index) => {
+        const slot = document.createElement('div');
+        slot.className = 'hotbar-slot' + (index === player.selectedIndex ? ' active' : '');
+        slot.innerHTML = `<div class='name'>${item.name}</div><div class='durability'>Durability: ${item.durability}/${item.maxDurability}</div><div class='hotkey'>${index + 1}</div>`;
+        hotbar.appendChild(slot);
+      });
+    }
+
+
+    function draw() {
+      ctx.clearRect(0, 0, width, height);
+      ctx.fillStyle = '#0f1624';
+      ctx.fillRect(0, 0, width, height);
+      drawGrid();
+
+
+      ensureWorldChunks();
+      const centerCx = Math.floor(player.x / world.chunkSize);
+      const centerCy = Math.floor(player.y / world.chunkSize);
+      const radius = world.visibleRadius;
+      for (let dx = -radius; dx <= radius; dx++) {
+        for (let dy = -radius; dy <= radius; dy++) {
+          const chunk = world.chunks.get(chunkKey(centerCx + dx, centerCy + dy));
+          if (!chunk) continue;
+          for (const resource of chunk.resources) {
+            drawResource(resource);
+          }
+        }
+      }
+
+
+      zombies.forEach(drawZombie);
+      bullets.forEach(drawBullet);
+      drawPlayer();
+      drawUI();
+    }
+
+
+    function spawnZombieWave() {
+      const angle = Math.random() * Math.PI * 2;
+      const distance = 600 + Math.random() * 240;
+      zombies.push({ x: player.x + Math.cos(angle) * distance, y: player.y + Math.sin(angle) * distance, radius: 18, speed: 90 + Math.random() * 40, health: 4 + Math.floor(Math.random() * 3) });
+    }
+
+
+    let spawnTimer = 0;
+    function updateGame(delta) {
+      if (currentState !== gameState.playing) return;
+      updatePlayer(delta);
+      camera.update();
+      updateWorld(delta);
+      spawnTimer -= delta;
+      if (spawnTimer <= 0) {
+        spawnZombieWave();
+        spawnTimer = 3 + Math.random() * 2;
+      }
+    }
+
+
+    let lastTime = 0;
+    function gameLoop(timestamp) {
+      const delta = Math.min((timestamp - lastTime) / 1000, 0.033);
+      lastTime = timestamp;
+      if (currentState === gameState.playing) {
+        updateGame(delta);
+      }
+      draw();
+      requestAnimationFrame(gameLoop);
+    }
+
+
+    restartGame();
+    requestAnimationFrame(gameLoop);
+  </script>
+</body>
+</html>
+
+
+
+
+

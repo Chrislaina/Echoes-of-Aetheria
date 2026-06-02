@@ -1,0 +1,21 @@
+[gd_scene load_steps=6 format=3 uid="P1l2a3y4"]
+[ext_resource path="res://Player.cs" type="Script" id=1]
+[ext_resource path="res://Projectile.tscn" type="PackedScene" id=2]
+
+[node name="Player" type="CharacterBody2D"]
+script = ExtResource( 1 )
+position = Vector2(512, 384)
+ProjectileScene = ExtResource( 2 )
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="."]
+shape = CircleShape2D {
+    radius = 16.0
+}
+
+[node name="Muzzle" type="Node2D" parent="."]
+position = Vector2(28, 0)
+
+[node name="Camera2D" type="Camera2D" parent="."]
+current = true
+smoothing_enabled = true
+smoothing_speed = 5.0
